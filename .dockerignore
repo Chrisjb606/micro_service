@@ -1,0 +1,8 @@
+### 4. .dockerignore
+```
+__pycache__/
+*.pyc
+.env
+```
+
+---
