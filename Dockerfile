@@ -1,5 +1,4 @@
 ### 3. Dockerfile
-```dockerfile
 # Use official Python image
 FROM python:3.11-slim
 
@@ -16,6 +15,6 @@ EXPOSE 3000
 
 # Start the service
 CMD ["python", "app.py"]
-```
 
----
+
+

@@ -1,5 +1,4 @@
 ### 2. requirements.txt
-```
+
 flask
 psycopg2-binary
-```
