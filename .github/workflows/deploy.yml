@@ -12,6 +12,8 @@ jobs:
       # … your checkout, AWS creds, ECR login, build & push steps …
 
       - name: Deploy CloudFormation stack
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           aws cloudformation deploy \
             --stack-name micro-service-ecs \
