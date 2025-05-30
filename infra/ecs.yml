@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Service + Auto-Scaling + Alarms + X-Ray
+
+Parameters:
+  ImageUri:
+    Type: String
+  ClusterName:
+    Type: String
+    Default: micro-service-cluster
+  ServiceName:
+    Type: String
+    Default: micro-service-service
+
+Resources:
+  MyScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub service/\${ClusterName}/\${ServiceName}
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 10
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: CpuScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref MyScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: HighCPUUtilization
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+        - Name: ServiceName
+          Value: !Ref ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+
+  XRayDaemonPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AllowXRayDaemon
+      Roles:
+        - Ref: TaskExecutionRole
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+            Resource: "*"
+
+  MyTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub \${ServiceName}-task
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: xray-daemon
+          Image: public.ecr.aws/xray/aws-xray-daemon:latest
+          Essential: false
+          PortMappings:
+            - ContainerPort: 2000
+              Protocol: udp
+        - Name: app
+          Image: !Ref ImageUri
+          Environment:
+            - Name: AWS_XRAY_DAEMON_ADDRESS
+              Value: "127.0.0.1:2000"
+          PortMappings:
+            - ContainerPort: 3000
+
+  MyService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref ClusterName
+      DesiredCount: 1
+      TaskDefinition: !Ref MyTaskDefinition
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: [ subnet-12345a, subnet-12345b ]
+          AssignPublicIp: ENABLED
+
+Outputs:
+  ServiceArn:
+    Description: ARN of the ECS Service
+    Value: !Ref MyService
