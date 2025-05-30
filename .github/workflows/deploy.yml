@@ -1,0 +1,26 @@
+# .github/workflows/deploy.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # … your checkout, AWS creds, ECR login, build & push steps …
+
+      - name: Deploy CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name micro-service-ecs \
+            --template-file infra/ecs.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+                ImageUri=${{ steps.ecr.outputs.registry }}/micro_service:${{ github.sha }} \
+                ClusterName=micro-service-cluster \
+                ServiceName=micro-service-service \
+                VpcId=vpc-0abc1234def5678gh \
+                SubnetIds=subnet-0123abcd,subnet-4567efgh \
+                SecurityGroupIds=sg-0123abcd
