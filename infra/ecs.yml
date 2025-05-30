@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Service + Auto-Scaling + Alarms + X-Ray
+Description: ECS Service + Auto-Scaling + Alarms + X-Ray + VPC Networking
 
 Parameters:
   ImageUri:
@@ -11,12 +11,45 @@ Parameters:
     Type: String
     Default: micro-service-service
 
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to launch into
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for Fargate
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: SGs for the ENIs
+
 Resources:
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 1) IAM Role for ECS Task Execution (incl. X-Ray write access)
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ServiceName}-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # allows pulling images, writing logs, etc.
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        # allows the X-Ray daemon to upload traces
+        - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 2) Auto-Scaling
+
   MyScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties:
       ServiceNamespace: ecs
-      ResourceId: !Sub service/\${ClusterName}/\${ServiceName}
+      ResourceId: !Sub service/${ClusterName}/${ServiceName}
       ScalableDimension: ecs:service:DesiredCount
       MinCapacity: 1
       MaxCapacity: 10
@@ -33,6 +66,9 @@ Resources:
           PredefinedMetricType: ECSServiceAverageCPUUtilization
         ScaleInCooldown: 60
         ScaleOutCooldown: 60
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 3) CloudWatch Alarm
 
   HighCpuAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -51,25 +87,19 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanThreshold
 
-  XRayDaemonPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: AllowXRayDaemon
-      Roles:
-        - Ref: TaskExecutionRole
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Action:
-              - xray:PutTraceSegments
-              - xray:PutTelemetryRecords
-            Resource: "*"
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 4) Task Definition with X-Ray sidecar
 
   MyTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub \${ServiceName}-task
+      Family: !Sub ${ServiceName}-task
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: "256"
+      Memory: "512"
       ContainerDefinitions:
         - Name: xray-daemon
           Image: public.ecr.aws/xray/aws-xray-daemon:latest
@@ -85,6 +115,9 @@ Resources:
           PortMappings:
             - ContainerPort: 3000
 
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 5) ECS Service
+
   MyService:
     Type: AWS::ECS::Service
     Properties:
@@ -94,7 +127,8 @@ Resources:
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
-          Subnets: [ subnet-12345a, subnet-12345b ]
+          Subnets:     !Ref SubnetIds
+          SecurityGroups: !Ref SecurityGroupIds
           AssignPublicIp: ENABLED
 
 Outputs:
