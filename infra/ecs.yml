@@ -1,5 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Service + Auto-Scaling + CloudWatch Alarm + X-Ray + VPC Networking
+Description: >
+  Creates an ECS Cluster, ECS Service (with X-Ray sidecar),
+  Auto-Scaling, and a CloudWatch Alarm in a VPC.
 
 Parameters:
   ImageUri:
@@ -7,24 +9,33 @@ Parameters:
   ClusterName:
     Type: String
     Default: micro-service-cluster
+    Description: Name of the ECS Cluster to create/use
   ServiceName:
     Type: String
     Default: micro-service-service
+    Description: Name of the ECS Service to create
 
   VpcId:
     Type: AWS::EC2::VPC::Id
     Description: VPC to launch into
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Private subnets for Fargate
+    Description: Two or more private subnets for Fargate
   SecurityGroupIds:
     Type: List<AWS::EC2::SecurityGroup::Id>
-    Description: SGs for the ENIs
+    Description: Security Group(s) for task ENIs
 
 Resources:
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 1) IAM Role for ECS Task Execution (includes X-Ray write access)
+  # 1) ECS Cluster (so Service has a cluster to attach to)
+  MyCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 2) IAM Role for ECS Task Execution (with X-Ray write access)
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -37,13 +48,13 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # Allows pulling images from ECR, writing to CloudWatch Logs, etc.
+        # Pull images, write to CloudWatch Logs
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-        # Allows the X-Ray daemon to upload traces
+        # Allow X-Ray daemon to send traces
         - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 2) ECS Task Definition (with X-Ray sidecar)
+  # 3) ECS Task Definition (with X-Ray sidecar)
   MyTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -70,11 +81,12 @@ Resources:
             - ContainerPort: 3000
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 3) ECS Service (must refer to an existing cluster named ${ClusterName})
+  # 4) ECS Service (depends on the cluster being created first)
   MyService:
     Type: AWS::ECS::Service
+    DependsOn: MyCluster
     Properties:
-      Cluster: !Ref ClusterName
+      Cluster: !Ref MyCluster
       ServiceName: !Ref ServiceName
       DesiredCount: 1
       TaskDefinition: !Ref MyTaskDefinition
@@ -86,8 +98,8 @@ Resources:
           AssignPublicIp: ENABLED
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 4) Application Auto Scaling – Scalable Target
-  #    DependsOn MyService, otherwise CF tries to register a non-existent service.
+  # 5) Application Auto Scaling – Scalable Target
+  #    Service must exist before registering as scalable target
   MyScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     DependsOn: MyService
@@ -99,7 +111,7 @@ Resources:
       MaxCapacity: 10
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 5) Application Auto Scaling – Target Tracking Policy (CPU)
+  # 6) Application Auto Scaling – Target Tracking Policy (CPU)
   CpuScalingPolicy:
     Type: AWS::ApplicationAutoScaling::ScalingPolicy
     Properties:
@@ -114,7 +126,7 @@ Resources:
         ScaleOutCooldown: 60
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 6) CloudWatch Alarm (High CPU)
+  # 7) CloudWatch Alarm (High CPU)
   HighCpuAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -133,6 +145,10 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
 
 Outputs:
+  ClusterArn:
+    Description: ARN of the ECS Cluster
+    Value: !GetAtt MyCluster.Arn
+
   ServiceArn:
     Description: ARN of the ECS Service
     Value: !Ref MyService
