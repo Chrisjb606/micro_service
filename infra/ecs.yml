@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Service + Auto-Scaling + Alarms + X-Ray + VPC Networking
+Description: ECS Service + Auto-Scaling + CloudWatch Alarm + X-Ray + VPC Networking
 
 Parameters:
   ImageUri:
@@ -24,7 +24,7 @@ Parameters:
 Resources:
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 1) IAM Role for ECS Task Execution (incl. X-Ray write access)
+  # 1) IAM Role for ECS Task Execution (includes X-Ray write access)
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -37,59 +37,13 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # allows pulling images, writing logs, etc.
+        # Allows pulling images from ECR, writing to CloudWatch Logs, etc.
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-        # allows the X-Ray daemon to upload traces
+        # Allows the X-Ray daemon to upload traces
         - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 2) Auto-Scaling
-
-  MyScalableTarget:
-    Type: AWS::ApplicationAutoScaling::ScalableTarget
-    Properties:
-      ServiceNamespace: ecs
-      ResourceId: !Sub service/${ClusterName}/${ServiceName}
-      ScalableDimension: ecs:service:DesiredCount
-      MinCapacity: 1
-      MaxCapacity: 10
-
-  CpuScalingPolicy:
-    Type: AWS::ApplicationAutoScaling::ScalingPolicy
-    Properties:
-      PolicyName: CpuScalingPolicy
-      PolicyType: TargetTrackingScaling
-      ScalingTargetId: !Ref MyScalableTarget
-      TargetTrackingScalingPolicyConfiguration:
-        TargetValue: 60.0
-        PredefinedMetricSpecification:
-          PredefinedMetricType: ECSServiceAverageCPUUtilization
-        ScaleInCooldown: 60
-        ScaleOutCooldown: 60
-
-  # ──────────────────────────────────────────────────────────────────────────────
-  # 3) CloudWatch Alarm
-
-  HighCpuAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: HighCPUUtilization
-      Namespace: AWS/ECS
-      MetricName: CPUUtilization
-      Dimensions:
-        - Name: ClusterName
-          Value: !Ref ClusterName
-        - Name: ServiceName
-          Value: !Ref ServiceName
-      Statistic: Average
-      Period: 300
-      EvaluationPeriods: 2
-      Threshold: 80
-      ComparisonOperator: GreaterThanThreshold
-
-  # ──────────────────────────────────────────────────────────────────────────────
-  # 4) Task Definition with X-Ray sidecar
-
+  # 2) ECS Task Definition (with X-Ray sidecar)
   MyTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -116,20 +70,67 @@ Resources:
             - ContainerPort: 3000
 
   # ──────────────────────────────────────────────────────────────────────────────
-  # 5) ECS Service
-
+  # 3) ECS Service (must refer to an existing cluster named ${ClusterName})
   MyService:
     Type: AWS::ECS::Service
     Properties:
       Cluster: !Ref ClusterName
+      ServiceName: !Ref ServiceName
       DesiredCount: 1
       TaskDefinition: !Ref MyTaskDefinition
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
-          Subnets:     !Ref SubnetIds
+          Subnets:        !Ref SubnetIds
           SecurityGroups: !Ref SecurityGroupIds
           AssignPublicIp: ENABLED
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 4) Application Auto Scaling – Scalable Target
+  #    DependsOn MyService, otherwise CF tries to register a non-existent service.
+  MyScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: MyService
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub service/${ClusterName}/${ServiceName}
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 10
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 5) Application Auto Scaling – Target Tracking Policy (CPU)
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: CpuScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref MyScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+
+  # ──────────────────────────────────────────────────────────────────────────────
+  # 6) CloudWatch Alarm (High CPU)
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: HighCPUUtilization
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+        - Name: ServiceName
+          Value: !Ref ServiceName
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
 
 Outputs:
   ServiceArn:
