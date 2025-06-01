@@ -17,3 +17,6 @@
    - `GET http://localhost:3000/health`
    - `GET http://localhost:3000/items`
    - `POST http://localhost:3000/items` with JSON `{ "name": "example" }`
+
+
+Kick of a new test to see CICD working 
