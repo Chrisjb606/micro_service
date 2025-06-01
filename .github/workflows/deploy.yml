@@ -1,4 +1,5 @@
 # .github/workflows/deploy.yml
+
 name: CI/CD Pipeline
 
 on:
@@ -7,13 +8,13 @@ on:
       - main
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_REGION: eu-west-2
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      # 1) Checkout your repo
+      # 1) Check out the repository
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -25,7 +26,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      # 3) Login to ECR
+      # 3) Log in to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
@@ -36,24 +37,35 @@ jobs:
           IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/micro_service:${{ github.sha }}
           docker build -t $IMAGE_URI .
 
-      # 5) Push the image to ECR
+      # 5) Push the Docker image to ECR
       - name: Push Docker image
         run: |
           IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/micro_service:${{ github.sha }}
           docker push $IMAGE_URI
 
-      # 6) Deploy via CloudFormation
+      # 6) Deploy the CloudFormation stack
       - name: Deploy CloudFormation stack
+        id: deploy-cfn
         run: |
           aws cloudformation deploy \
             --stack-name micro-service-ecs \
             --template-file infra/ecs.yml \
+            --region ${{ env.AWS_REGION }} \
             --capabilities CAPABILITY_NAMED_IAM \
             --parameter-overrides \
                 ImageUri=${{ steps.login-ecr.outputs.registry }}/micro_service:${{ github.sha }} \
                 ClusterName=micro-service-cluster \
                 ServiceName=micro-service-service \
-                VpcId=vpc-0abc1234def5678gh \
-                SubnetIds=subnet-0123abcd,subnet-4567efgh \
-                SecurityGroupIds=sg-0123abcd
+                VpcId=vpc-7506541d \
+                SubnetIds=subnet-028d36cf8a06c963e,subnet-0810d01cb42cc41e1 \
+                SecurityGroupIds=sg-bbf5fddd
 
+      # 7) If the deploy fails, dump CloudFormation error events
+      - name: Dump CloudFormation error events
+        if: failure()
+        run: |
+          aws cloudformation describe-stack-events \
+            --stack-name micro-service-ecs \
+            --region ${{ env.AWS_REGION }} \
+            --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`UPDATE_ROLLBACK_FAILED`]' \
+            --output table
